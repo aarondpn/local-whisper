@@ -20,7 +20,9 @@ struct StatisticsTab: View {
                 resetButton
             }
             .padding()
+            .frame(maxWidth: .infinity)
         }
+        .scrollIndicators(.never)
     }
 
     // MARK: - Summary Cards

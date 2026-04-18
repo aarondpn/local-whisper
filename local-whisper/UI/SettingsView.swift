@@ -42,7 +42,7 @@ struct SettingsView: View {
                 .tabItem { Label("Statistics", systemImage: "chart.bar") }
                 .tag(SettingsTab.statistics)
         }
-        .frame(minWidth: 560, idealWidth: 620, maxWidth: .infinity, minHeight: 580, idealHeight: 640, maxHeight: .infinity)
+        .frame(width: 620, height: 640)
         .onAppear {
             if let requested = appState.requestedSettingsTab {
                 selection = requested
