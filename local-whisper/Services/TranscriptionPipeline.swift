@@ -58,15 +58,37 @@ final class TranscriptionPipeline {
         Log.coordinator.info("Final prompt (\(finalPrompt?.count ?? 0) chars, \(finalPrompt?.utf8.count ?? 0) bytes): \(finalPrompt ?? "(none)")")
 
         appState.lastPrompt = finalPrompt
+        let apiLanguage = language == "auto" ? nil : language
+
+        func transcribeAllowingEmpty(prompt: String?) async throws -> String {
+            do {
+                return try await provider.transcribe(audioData: audioData, language: apiLanguage, prompt: prompt)
+            } catch TranscriptionError.emptyResponse {
+                return ""
+            }
+        }
 
         do {
             let startTime = Date()
-            let text = try await provider.transcribe(audioData: audioData, language: language == "auto" ? nil : language, prompt: finalPrompt)
+            var text = try await transcribeAllowingEmpty(prompt: finalPrompt)
             try Task.checkCancellation()
+
+            // Dynamic context can occasionally bias Whisper into returning nothing
+            // (odd unicode, control chars, or adversarial snippets captured via AX).
+            // Retry once with only the profile prompt so a poisoned context doesn't
+            // swallow a valid recording.
+            if text.isEmpty, capturedContext != nil {
+                Log.coordinator.info("Empty result with dynamic context; retrying with profile prompt only")
+                text = try await transcribeAllowingEmpty(prompt: resolved.prompt)
+                try Task.checkCancellation()
+            }
+
             let latency = Date().timeIntervalSince(startTime)
 
             guard !text.isEmpty else {
-                Log.coordinator.info("Transcription returned empty text")
+                Log.coordinator.error("Transcription returned empty text")
+                self.appState.reportError(TranscriptionError.emptyResponse.errorDescription ?? "No transcription returned")
+                SoundFeedback.playErrorSound()
                 return
             }
 

@@ -23,6 +23,7 @@ protocol TranscriptionProvider {
 enum TranscriptionError: LocalizedError {
     case noAPIKey
     case invalidResponse
+    case emptyResponse
     case apiError(String)
     case networkError(Error)
 
@@ -30,6 +31,7 @@ enum TranscriptionError: LocalizedError {
         switch self {
         case .noAPIKey: return "API key not configured"
         case .invalidResponse: return "Invalid response from server"
+        case .emptyResponse: return "No transcription returned"
         case .apiError(let message): return "API error: \(message)"
         case .networkError(let error): return "Network error: \(error.localizedDescription)"
         }

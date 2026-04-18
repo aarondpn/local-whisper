@@ -40,9 +40,11 @@ final class OpenAIWhisperProvider: TranscriptionProvider {
             throw TranscriptionError.apiError("HTTP \(httpResponse.statusCode): \(errorBody)")
         }
 
-        guard let text = String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines),
-              !text.isEmpty else {
+        guard let text = String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines) else {
             throw TranscriptionError.invalidResponse
+        }
+        guard !text.isEmpty else {
+            throw TranscriptionError.emptyResponse
         }
 
         return text
