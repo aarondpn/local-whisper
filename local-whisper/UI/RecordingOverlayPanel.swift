@@ -119,8 +119,13 @@ final class RecordingOverlayPanel: NSPanel {
         chromeBelow.autoresizingMask = [.width, .height]
         pill.addSubview(chromeBelow)
 
-        // SwiftUI content hosts once — stays across theme swaps, reactively re-themes itself.
-        let overlayView = RecordingOverlayView().environment(appState)
+        // SwiftUI host stays mounted across theme swaps, but its body only renders
+        // RecordingOverlayView while a visibility flag is set on AppState. That gates
+        // all child timers/animations on actual visibility — orderOut(nil) hides the
+        // NSPanel without tearing down its view tree, so without this gate the 60 Hz
+        // visualization timer, the 10 Hz timer-label TimelineView, and the
+        // repeatForever pulse/rotation animations would run for the full app lifetime.
+        let overlayView = RecordingOverlayHost().environment(appState)
         let controller = NSHostingController(rootView: overlayView)
         controller.sceneBridgingOptions = []
         let hostingView = controller.view

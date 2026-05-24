@@ -1,5 +1,21 @@
 import SwiftUI
 
+/// Gates the overlay's SwiftUI subtree on its visibility flags. The NSPanel hosting
+/// this view stays alive for the app lifetime, so without this gate any Timer/
+/// TimelineView/repeatForever animation inside RecordingOverlayView would keep
+/// firing 24/7 — even while the panel is `orderOut`. Hiding an NSPanel doesn't
+/// tear down its content view tree, so we tear it down ourselves by rendering
+/// nothing when no flag is set.
+struct RecordingOverlayHost: View {
+    @Environment(AppState.self) private var appState
+
+    var body: some View {
+        if appState.isRecording || appState.isTranscribing || appState.isOverlayPositioningSession {
+            RecordingOverlayView()
+        }
+    }
+}
+
 struct RecordingOverlayView: View {
     @Environment(AppState.self) private var appState
 
