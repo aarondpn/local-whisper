@@ -2,7 +2,7 @@ import AVFoundation
 import Foundation
 
 final class AudioRecorder {
-    private let engine = AVAudioEngine()
+    private var engine = AVAudioEngine()
     private var audioData = Data()
     private let targetSampleRate: Double = 16000
     private let targetChannels: AVAudioChannelCount = 1
@@ -17,6 +17,13 @@ final class AudioRecorder {
             tapInstalled = false
         }
 
+        // Build a fresh engine every session. AVAudioEngine caches its input node and the
+        // hardware format at construction time; after a sleep/wake cycle or an input-device
+        // change those go stale, and a reused engine then captures silence or fails to start.
+        // Recreating runs once per hotkey press (not in any hot path), so the cost is trivial
+        // and it makes capture survive sleep, wake, and device swaps without a restart.
+        engine = AVAudioEngine()
+
         self.onLevelUpdate = onLevelUpdate
         audioData = Data()
 
@@ -27,6 +34,13 @@ final class AudioRecorder {
 
         let inputNode = engine.inputNode
         let inputFormat = inputNode.outputFormat(forBus: 0)
+
+        // A disconnected or not-yet-ready input device reports a 0 Hz / 0-channel format.
+        // Fail loudly here so the error surfaces to the user instead of silently recording
+        // nothing and shipping an empty clip to the transcription provider.
+        guard inputFormat.sampleRate > 0, inputFormat.channelCount > 0 else {
+            throw RecorderError.noInputAvailable
+        }
 
         guard let targetFormat = AVAudioFormat(
             commonFormat: .pcmFormatFloat32,
@@ -157,11 +171,13 @@ final class AudioRecorder {
 enum RecorderError: LocalizedError {
     case formatCreationFailed
     case converterCreationFailed
+    case noInputAvailable
 
     var errorDescription: String? {
         switch self {
         case .formatCreationFailed: return "Failed to create audio format"
         case .converterCreationFailed: return "Failed to create audio converter"
+        case .noInputAvailable: return "No microphone input available"
         }
     }
 }

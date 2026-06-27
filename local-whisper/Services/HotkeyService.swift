@@ -7,6 +7,8 @@ final class HotkeyService {
     private var runLoopSource: CFRunLoopSource?
     private var isKeyDown = false
     private var retryTimer: Timer?
+    private var healthTimer: Timer?
+    private var wakeObserver: Any?
 
     var onKeyDown: (() -> Void)?
     var onKeyUp: (() -> Void)?
@@ -16,18 +18,18 @@ final class HotkeyService {
     deinit {
         // The tap callback holds an unretained pointer to `self`; it must be torn down
         // before the instance dies or the next event will dereference freed memory.
-        if let tap = eventTap {
-            CGEvent.tapEnable(tap: tap, enable: false)
-        }
-        if let source = runLoopSource {
-            CFRunLoopRemoveSource(CFRunLoopGetMain(), source, .commonModes)
-        }
+        teardownTap()
         retryTimer?.invalidate()
+        healthTimer?.invalidate()
+        if let wakeObserver {
+            NSWorkspace.shared.notificationCenter.removeObserver(wakeObserver)
+        }
     }
 
     func start() {
         stop()
         reloadConfiguration()
+        installResilienceMonitors()
 
         if !PermissionChecker.hasAccessibilityPermission {
             Log.hotkey.warning("No accessibility permission, requesting and scheduling retry...")
@@ -42,7 +44,19 @@ final class HotkeyService {
     func stop() {
         retryTimer?.invalidate()
         retryTimer = nil
+        healthTimer?.invalidate()
+        healthTimer = nil
+        if let wakeObserver {
+            NSWorkspace.shared.notificationCenter.removeObserver(wakeObserver)
+            self.wakeObserver = nil
+        }
 
+        teardownTap()
+        isKeyDown = false
+    }
+
+    /// Disables and unregisters the event tap. Idempotent; safe to call when no tap exists.
+    private func teardownTap() {
         if let tap = eventTap {
             CGEvent.tapEnable(tap: tap, enable: false)
         }
@@ -51,7 +65,39 @@ final class HotkeyService {
         }
         eventTap = nil
         runLoopSource = nil
-        isKeyDown = false
+    }
+
+    /// The session event tap is a perishable OS resource: macOS silently tears it down across
+    /// sleep/wake and can disable it without ever delivering a `.tapDisabledByTimeout` event to
+    /// our callback (the only case `handleEvent` can self-heal). A wake observer recovers it the
+    /// instant the machine comes back; a low-frequency watchdog is the backstop for every other
+    /// way it can die. Both funnel through `ensureTapHealthy()`, a no-op while the tap is live —
+    /// so steady-state cost is a single `tapIsEnabled` mach call every 10 s.
+    private func installResilienceMonitors() {
+        wakeObserver = NSWorkspace.shared.notificationCenter.addObserver(
+            forName: NSWorkspace.didWakeNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            self?.ensureTapHealthy()
+        }
+
+        let timer = Timer(timeInterval: 10, repeats: true) { [weak self] _ in
+            self?.ensureTapHealthy()
+        }
+        // Generous tolerance lets the system coalesce the wake-up — negligible battery impact.
+        timer.tolerance = 5
+        RunLoop.main.add(timer, forMode: .common)
+        healthTimer = timer
+    }
+
+    /// Recreates the event tap if it is missing or has been disabled. Cheap and idempotent —
+    /// safe to call from the watchdog, the wake notification, or anywhere a stale tap is suspected.
+    private func ensureTapHealthy() {
+        guard PermissionChecker.hasAccessibilityPermission else { return }
+        if let tap = eventTap, CGEvent.tapIsEnabled(tap: tap) { return }
+        Log.hotkey.warning("Event tap not alive — recreating")
+        createEventTap()
     }
 
     func reloadConfiguration() {
@@ -72,6 +118,9 @@ final class HotkeyService {
     }
 
     private func createEventTap() {
+        // Drop any prior tap/source first so recreation (e.g. after wake) never leaks one.
+        teardownTap()
+
         let eventMask: CGEventMask = (1 << CGEventType.keyDown.rawValue)
             | (1 << CGEventType.keyUp.rawValue)
             | (1 << CGEventType.flagsChanged.rawValue)
