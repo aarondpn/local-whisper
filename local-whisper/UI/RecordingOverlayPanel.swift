@@ -3,6 +3,9 @@ import SwiftUI
 
 final class DraggableRootView: NSView {
     var isDraggable: () -> Bool = { false }
+    /// The visually occupied rect (the pill/card). Clicks outside it fall through
+    /// to whatever is behind the transparent window instead of being swallowed.
+    var activeRect: () -> NSRect? = { nil }
 
     // Intercept hit-testing when drag mode is active so SwiftUI hosting subviews
     // don't swallow the mouseDown event. Fall back to default routing otherwise.
@@ -10,6 +13,10 @@ final class DraggableRootView: NSView {
         if isDraggable() {
             let localPoint = superview.map { convert(point, from: $0) } ?? point
             return bounds.contains(localPoint) ? self : super.hitTest(point)
+        }
+        if let active = activeRect() {
+            let localPoint = superview.map { convert(point, from: $0) } ?? point
+            if !active.insetBy(dx: -8, dy: -8).contains(localPoint) { return nil }
         }
         return super.hitTest(point)
     }
@@ -36,6 +43,10 @@ final class RecordingOverlayPanel: NSPanel {
     private static let basePanelWidth: CGFloat = 260
     private static let basePanelHeight: CGFloat = 54
     private static let baseCornerRadius: CGFloat = 27
+    // Live-transcription card the pill morphs into.
+    private static let baseCardWidth: CGFloat = 420
+    private static let baseCardHeight: CGFloat = 148
+    private static let baseCardCornerRadius: CGFloat = 22
     // Wide enough to let any theme's shadow (max radius 28 + 8pt offset + 14pt
     // slide animation) fade to zero before hitting the panel window rectangle,
     // which would otherwise clip the halo into visible rectangular edges.
@@ -46,9 +57,45 @@ final class RecordingOverlayPanel: NSPanel {
     private var panelWidth: CGFloat { Self.basePanelWidth * scale }
     private var panelHeight: CGFloat { Self.basePanelHeight * scale }
     private var cornerRadius: CGFloat { Self.baseCornerRadius * scale }
+    private var cardWidth: CGFloat { Self.baseCardWidth * scale }
+    private var cardHeight: CGFloat { Self.baseCardHeight * scale }
+    private var cardCornerRadius: CGFloat { Self.baseCardCornerRadius * scale }
 
-    private var windowWidth: CGFloat { panelWidth + slidePadding * 2 }
-    private var windowHeight: CGFloat { panelHeight + slidePadding * 2 }
+    // The window is always sized to hold the fully expanded card (plus shadow
+    // padding); it is invisible, only the pill subview renders. The pill→card
+    // morph is therefore pure subview animation — the window frame never moves
+    // while visible, which would stutter against layer animations.
+    private var windowWidth: CGFloat { cardWidth + slidePadding * 2 }
+    private var windowHeight: CGFloat { cardHeight + slidePadding * 2 }
+
+    /// Which way the pill grows into the card: away from the nearest screen edge.
+    private enum GrowDirection { case up, down, center }
+    private var growDirection: GrowDirection = .up
+    private var isExpanded = false
+    private var expandCapTask: Task<Void, Never>?
+    private var lastLiveActive = false
+
+    /// Where the pill sits inside the oversized window, per grow direction.
+    private var pillRectInWindow: NSRect {
+        NSRect(origin: restingOrigin(for: NSSize(width: panelWidth, height: panelHeight)),
+               size: NSSize(width: panelWidth, height: panelHeight))
+    }
+
+    private var cardRectInWindow: NSRect {
+        NSRect(origin: restingOrigin(for: NSSize(width: cardWidth, height: cardHeight)),
+               size: NSSize(width: cardWidth, height: cardHeight))
+    }
+
+    private func restingOrigin(for size: NSSize) -> NSPoint {
+        let x = (windowWidth - size.width) / 2
+        let y: CGFloat
+        switch growDirection {
+        case .up: y = slidePadding
+        case .down: y = windowHeight - slidePadding - size.height
+        case .center: y = (windowHeight - size.height) / 2
+        }
+        return NSPoint(x: x, y: y)
+    }
 
     // Animated root (slide + fade). Holds the shadow; child clips the rounded pill.
     private weak var pillHost: NSView?
@@ -69,7 +116,11 @@ final class RecordingOverlayPanel: NSPanel {
         let initialPanelHeight = Self.basePanelHeight * scale
         let initialCornerRadius = Self.baseCornerRadius * scale
         let pad = Self.slidePadding
-        let contentRect = NSRect(x: 0, y: 0, width: initialPanelWidth + pad * 2, height: initialPanelHeight + pad * 2)
+        let contentRect = NSRect(
+            x: 0, y: 0,
+            width: Self.baseCardWidth * scale + pad * 2,
+            height: Self.baseCardHeight * scale + pad * 2
+        )
         super.init(
             contentRect: contentRect,
             styleMask: [.borderless, .nonactivatingPanel],
@@ -94,7 +145,14 @@ final class RecordingOverlayPanel: NSPanel {
         root.wantsLayer = true
 
         // Shadow carrier — renders shadow outside the pill's rounded mask.
-        let pillFrame = NSRect(x: pad, y: pad, width: initialPanelWidth, height: initialPanelHeight)
+        // Centered horizontally in the card-capable window; bottom-anchored (the
+        // default grow direction) vertically. showOverlay repositions per session.
+        let pillFrame = NSRect(
+            x: (contentRect.width - initialPanelWidth) / 2,
+            y: pad,
+            width: initialPanelWidth,
+            height: initialPanelHeight
+        )
         let shadowHost = NSView(frame: pillFrame)
         shadowHost.wantsLayer = true
         shadowHost.layer?.shadowOffset = CGSize(width: 0, height: -8)
@@ -158,6 +216,7 @@ final class RecordingOverlayPanel: NSPanel {
             guard let self else { return false }
             return self.appState.overlayPosition == .custom || self.isPositioningSession
         }
+        root.activeRect = { [weak self] in self?.pillHost?.frame }
 
         self.delegate = self
 
@@ -175,16 +234,42 @@ final class RecordingOverlayPanel: NSPanel {
         withObservationTracking {
             _ = appState.hudThemeID
             _ = appState.hudSize
+            _ = appState.liveTranscript
         } onChange: { [weak self] in
             DispatchQueue.main.async {
                 guard let self else { return }
                 if self.appliedSize != self.appState.hudSize {
                     self.applyGeometry()
-                } else {
+                } else if self.appliedThemeID != self.appState.hudThemeID {
                     self.applyTheme(self.appState.hudTheme)
                 }
+                self.evaluateLiveExpansion()
                 self.observeState()
             }
+        }
+    }
+
+    /// Expand when the first finalized text arrives — the morph is the payoff
+    /// moment — with a 1.2 s cap so slow starters still get the card (showing
+    /// the listening caret) before their first sentence lands.
+    private func evaluateLiveExpansion() {
+        let live = appState.liveTranscript
+        let active = live != nil
+        if active, !lastLiveActive {
+            expandCapTask?.cancel()
+            expandCapTask = Task { @MainActor [weak self] in
+                try? await Task.sleep(for: .seconds(1.2))
+                guard !Task.isCancelled else { return }
+                self?.expandToCard()
+            }
+        } else if !active {
+            expandCapTask?.cancel()
+            expandCapTask = nil
+        }
+        lastLiveActive = active
+
+        if let live, !live.settled.isEmpty {
+            expandToCard()
         }
     }
 
@@ -206,7 +291,11 @@ final class RecordingOverlayPanel: NSPanel {
         contentView?.frame = NSRect(origin: .zero, size: newSize)
 
         // Resize the animated carrier. Autoresizing cascades to pill → chromes.
-        let pillFrame = NSRect(x: slidePadding, y: slidePadding, width: panelWidth, height: panelHeight)
+        // Size changes only happen from Settings, never mid-session, so always
+        // reset to the collapsed pill.
+        isExpanded = false
+        appState.liveCardExpanded = false
+        let pillFrame = pillRectInWindow
         pillHost.frame = pillFrame
         pillHost.layer?.shadowPath = CGPath(
             roundedRect: NSRect(origin: .zero, size: pillFrame.size),
@@ -315,10 +404,11 @@ final class RecordingOverlayPanel: NSPanel {
         borderLayer.endPoint = CGPoint(x: 1.0, y: 0.0)
         let borderMask = CAShapeLayer()
         let inset: CGFloat = 0.5
+        let maskRadius = isExpanded ? cardCornerRadius : cornerRadius
         borderMask.path = CGPath(
             roundedRect: bounds.insetBy(dx: inset, dy: inset),
-            cornerWidth: cornerRadius - inset,
-            cornerHeight: cornerRadius - inset,
+            cornerWidth: maskRadius - inset,
+            cornerHeight: maskRadius - inset,
             transform: nil
         )
         borderMask.lineWidth = 1
@@ -331,44 +421,45 @@ final class RecordingOverlayPanel: NSPanel {
 
     // MARK: - Positioning
 
-    private func resolvedOrigin(for screenFrame: NSRect) -> NSPoint {
-        let x: CGFloat
-        let y: CGFloat
+    /// The pill's desired on-screen origin — the canonical positioning quantity.
+    /// The window (oversized to hold the expanded card) is placed around it.
+    /// Custom positions persist in the legacy convention (pill-sized window
+    /// origin, i.e. pill origin minus slidePadding) so stored values survive.
+    private func desiredPillOrigin(for screenFrame: NSRect) -> NSPoint {
         switch appState.overlayPosition {
         case .bottom:
-            x = screenFrame.midX - windowWidth / 2
-            y = screenFrame.minY + 80 - slidePadding
+            break
         case .center:
-            x = screenFrame.midX - windowWidth / 2
-            y = screenFrame.midY - windowHeight / 2
+            return NSPoint(x: screenFrame.midX - panelWidth / 2,
+                           y: screenFrame.midY - panelHeight / 2)
         case .top:
-            x = screenFrame.midX - windowWidth / 2
-            y = screenFrame.maxY - windowHeight - 20 + slidePadding
+            return NSPoint(x: screenFrame.midX - panelWidth / 2,
+                           y: screenFrame.maxY - 20 - panelHeight)
         case .custom:
             if appState.overlayCustomPositionSet {
-                let rawX = CGFloat(appState.overlayCustomX)
-                let rawY = CGFloat(appState.overlayCustomY)
-                x = clampCustomX(rawX, screenFrame: screenFrame)
-                y = clampCustomY(rawY, screenFrame: screenFrame)
-            } else {
-                x = screenFrame.midX - windowWidth / 2
-                y = screenFrame.minY + 80 - slidePadding
+                let rawX = CGFloat(appState.overlayCustomX) + slidePadding
+                let rawY = CGFloat(appState.overlayCustomY) + slidePadding
+                // Visible pill must stay fully on-screen.
+                let x = min(max(rawX, screenFrame.minX), screenFrame.maxX - panelWidth)
+                let y = min(max(rawY, screenFrame.minY), screenFrame.maxY - panelHeight)
+                return NSPoint(x: x, y: y)
             }
         }
-        return NSPoint(x: x, y: y)
+        return NSPoint(x: screenFrame.midX - panelWidth / 2, y: screenFrame.minY + 80)
     }
 
-    private func clampCustomX(_ rawX: CGFloat, screenFrame: NSRect) -> CGFloat {
-        // Visible pill must stay on-screen; the padding frame may extend a bit beyond.
-        let minX = screenFrame.minX - slidePadding
-        let maxX = screenFrame.maxX - windowWidth + slidePadding
-        return min(max(rawX, minX), maxX)
-    }
-
-    private func clampCustomY(_ rawY: CGFloat, screenFrame: NSRect) -> CGFloat {
-        let minY = screenFrame.minY - slidePadding
-        let maxY = screenFrame.maxY - windowHeight + slidePadding
-        return min(max(rawY, minY), maxY)
+    /// Decide which way the card grows, place the pill, and derive the window origin.
+    private func resolvedOrigin(for screenFrame: NSRect) -> NSPoint {
+        let pillOrigin = desiredPillOrigin(for: screenFrame)
+        switch appState.overlayPosition {
+        case .bottom: growDirection = .up
+        case .top: growDirection = .down
+        case .center: growDirection = .center
+        case .custom:
+            growDirection = (pillOrigin.y + panelHeight / 2) < screenFrame.midY ? .up : .down
+        }
+        let offset = pillRectInWindow.origin
+        return NSPoint(x: pillOrigin.x - offset.x, y: pillOrigin.y - offset.y)
     }
 
     /// Shows the panel in a static state for the user to drag into place.
@@ -414,6 +505,7 @@ final class RecordingOverlayPanel: NSPanel {
         isProgrammaticMove = true
         setFrame(NSRect(origin: origin, size: NSSize(width: windowWidth, height: windowHeight)), display: false)
         isProgrammaticMove = false
+        resetToPillGeometry()
         orderFrontRegardless()
         showTime = CFAbsoluteTimeGetCurrent()
 
@@ -450,6 +542,16 @@ final class RecordingOverlayPanel: NSPanel {
     }
 
     func hideOverlay() {
+        // Expanded card: settle beat → collapse → fade, as three distinct fast
+        // movements rather than one simultaneous mush.
+        if isExpanded {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) { [weak self] in
+                self?.collapseToPill { [weak self] in
+                    self?.fadeOut()
+                }
+            }
+            return
+        }
         let elapsed = CFAbsoluteTimeGetCurrent() - showTime
         let remaining = minDisplayDuration - elapsed
         if remaining > 0 {
@@ -504,10 +606,170 @@ final class RecordingOverlayPanel: NSPanel {
                 layer.transform = CATransform3DIdentity
                 CATransaction.commit()
             }
+            self.resetToPillGeometry()
         }
         layer.add(fade, forKey: "hud.fadeOut")
         layer.add(slide, forKey: "hud.slideOut")
         CATransaction.commit()
+    }
+
+    // MARK: - Live-card morph
+
+    private static let morphDuration: CFTimeInterval = 0.38
+    private static let morphTiming = CAMediaTimingFunction(controlPoints: 0.2, 1.0, 0.3, 1.0)
+
+    /// Snap back to collapsed pill geometry with no animation (session start/end).
+    private func resetToPillGeometry() {
+        guard let pillHost, let pill else { return }
+        expandCapTask?.cancel()
+        expandCapTask = nil
+        guard isExpanded || pillHost.frame != pillRectInWindow else { return }
+        isExpanded = false
+        appState.liveCardExpanded = false
+
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        pillHost.frame = pillRectInWindow
+        pillHost.layer?.shadowPath = CGPath(
+            roundedRect: NSRect(origin: .zero, size: pillRectInWindow.size),
+            cornerWidth: cornerRadius, cornerHeight: cornerRadius, transform: nil
+        )
+        pill.layer?.cornerRadius = cornerRadius
+        chromeAbove?.alphaValue = 1
+        CATransaction.commit()
+
+        appliedThemeID = nil
+        applyTheme(appState.hudTheme)
+    }
+
+    /// Morph the pill into the live-transcription card. The window is already
+    /// sized for the card, so this is pure subview/layer animation.
+    func expandToCard() {
+        guard !isExpanded, isVisible, appState.hudEnabled,
+              appState.liveTranscript != nil,
+              let pillHost, let pill else { return }
+        isExpanded = true
+        expandCapTask?.cancel()
+        expandCapTask = nil
+        // SwiftUI content crossfades to the card layout in sync with the morph.
+        appState.liveCardExpanded = true
+
+        var target = cardRectInWindow
+        // Clamp the card's screen rect to the visible frame (custom positions
+        // near an edge); the window never moves, only the card's inset shifts.
+        if let screen = screen ?? NSScreen.main {
+            let visible = screen.visibleFrame
+            let screenRect = NSRect(
+                x: frame.origin.x + target.origin.x,
+                y: frame.origin.y + target.origin.y,
+                width: target.width, height: target.height
+            )
+            let clampedX = min(max(screenRect.origin.x, visible.minX), visible.maxX - target.width)
+            let clampedY = min(max(screenRect.origin.y, visible.minY), visible.maxY - target.height)
+            target.origin.x += clampedX - screenRect.origin.x
+            target.origin.y += clampedY - screenRect.origin.y
+        }
+
+        // The hairline border's mask path can't track the resize; fade it out,
+        // rebuild at final bounds in the completion, fade back in.
+        if let chromeAbove {
+            NSAnimationContext.runAnimationGroup { ctx in
+                ctx.duration = 0.1
+                chromeAbove.animator().alphaValue = 0
+            }
+        }
+
+        animateMorph(to: target, cornerRadius: cardCornerRadius, on: pillHost, pill: pill) { [weak self] in
+            guard let self, self.isExpanded else { return }
+            self.appliedThemeID = nil
+            self.applyTheme(self.appState.hudTheme)
+            if let chromeAbove = self.chromeAbove {
+                NSAnimationContext.runAnimationGroup { ctx in
+                    ctx.duration = 0.15
+                    chromeAbove.animator().alphaValue = 1
+                }
+            }
+        }
+    }
+
+    /// Morph the card back down to the pill.
+    func collapseToPill(completion: (() -> Void)? = nil) {
+        guard isExpanded, let pillHost, let pill else {
+            completion?()
+            return
+        }
+        isExpanded = false
+        appState.liveCardExpanded = false
+
+        if let chromeAbove {
+            NSAnimationContext.runAnimationGroup { ctx in
+                ctx.duration = 0.1
+                chromeAbove.animator().alphaValue = 0
+            }
+        }
+
+        animateMorph(to: pillRectInWindow, cornerRadius: cornerRadius, on: pillHost, pill: pill) { [weak self] in
+            guard let self else { completion?(); return }
+            if !self.isExpanded {
+                self.appliedThemeID = nil
+                self.applyTheme(self.appState.hudTheme)
+                if let chromeAbove = self.chromeAbove {
+                    NSAnimationContext.runAnimationGroup { ctx in
+                        ctx.duration = 0.15
+                        chromeAbove.animator().alphaValue = 1
+                    }
+                }
+            }
+            completion?()
+        }
+    }
+
+    /// Shared morph choreography: frame via implicit animation (autoresizing
+    /// carries pill + chrome along), cornerRadius + shadowPath via explicit
+    /// CABasicAnimations so the shadow stays glued to the shape throughout.
+    private func animateMorph(
+        to target: NSRect,
+        cornerRadius targetRadius: CGFloat,
+        on pillHost: NSView,
+        pill: NSView,
+        completion: @escaping () -> Void
+    ) {
+        let fromRadius = pill.layer?.cornerRadius ?? targetRadius
+        let fromShadowPath = pillHost.layer?.shadowPath
+        let targetShadowPath = CGPath(
+            roundedRect: NSRect(origin: .zero, size: target.size),
+            cornerWidth: targetRadius, cornerHeight: targetRadius, transform: nil
+        )
+
+        // Land the layer model values first, then animate from the old state.
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        pill.layer?.cornerRadius = targetRadius
+        pillHost.layer?.shadowPath = targetShadowPath
+        CATransaction.commit()
+
+        let radiusAnim = CABasicAnimation(keyPath: "cornerRadius")
+        radiusAnim.fromValue = fromRadius
+        radiusAnim.toValue = targetRadius
+        radiusAnim.duration = Self.morphDuration
+        radiusAnim.timingFunction = Self.morphTiming
+        pill.layer?.add(radiusAnim, forKey: "hud.morphRadius")
+
+        if let fromShadowPath {
+            let shadowAnim = CABasicAnimation(keyPath: "shadowPath")
+            shadowAnim.fromValue = fromShadowPath
+            shadowAnim.toValue = targetShadowPath
+            shadowAnim.duration = Self.morphDuration
+            shadowAnim.timingFunction = Self.morphTiming
+            pillHost.layer?.add(shadowAnim, forKey: "hud.morphShadow")
+        }
+
+        NSAnimationContext.runAnimationGroup({ ctx in
+            ctx.duration = Self.morphDuration
+            ctx.timingFunction = Self.morphTiming
+            ctx.allowsImplicitAnimation = true
+            pillHost.animator().frame = target
+        }, completionHandler: completion)
     }
 }
 
@@ -515,8 +777,13 @@ extension RecordingOverlayPanel: NSWindowDelegate {
     func windowDidMove(_ notification: Notification) {
         guard !isProgrammaticMove else { return }
         guard appState.overlayPosition == .custom || isPositioningSession else { return }
-        appState.overlayCustomX = Double(frame.origin.x)
-        appState.overlayCustomY = Double(frame.origin.y)
+        // Persist in the legacy pill-sized-window convention (see desiredPillOrigin).
+        let pillOrigin = NSPoint(
+            x: frame.origin.x + pillRectInWindow.origin.x,
+            y: frame.origin.y + pillRectInWindow.origin.y
+        )
+        appState.overlayCustomX = Double(pillOrigin.x - slidePadding)
+        appState.overlayCustomY = Double(pillOrigin.y - slidePadding)
         appState.overlayCustomPositionSet = true
     }
 }

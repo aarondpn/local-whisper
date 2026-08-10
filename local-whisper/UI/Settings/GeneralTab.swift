@@ -6,13 +6,7 @@ struct GeneralTab: View {
     @State private var launchAtLogin = (SMAppService.mainApp.status == .enabled)
     @State private var localModelName = UserDefaults.standard.string(forKey: SettingsKeys.localModelName) ?? "large-v3_turbo"
 
-    private let localModels = [
-        ("tiny", "Tiny (~75 MB)"),
-        ("base", "Base (~140 MB)"),
-        ("small", "Small (~460 MB)"),
-        ("large-v3_turbo", "Large v3 Turbo (~1.5 GB)"),
-        ("large-v3", "Large v3 (~3 GB)"),
-    ]
+    private let localModels = LocalModelCatalog.all
 
     private var localModelStatusText: String {
         switch appState.localModelState {
@@ -73,21 +67,22 @@ struct GeneralTab: View {
 
             if appState.selectedProvider == .local {
                 Picker("Model", selection: $localModelName) {
-                    ForEach(localModels, id: \.0) { id, name in
-                        Text(name).tag(id)
+                    ForEach(localModels) { model in
+                        Text(model.displayName).tag(model.id)
                     }
                 }
                 .disabled({
                     if case .downloading = appState.localModelState { return true }
                     if case .loading = appState.localModelState { return true }
-                    return false
+                    // Never swap engines out from under an active session.
+                    return appState.isRecording || appState.isTranscribing
                 }())
                 .onChange(of: localModelName) { _, newValue in
                     UserDefaults.standard.set(newValue, forKey: SettingsKeys.localModelName)
                     // Reset state when model changes so user knows to download again
                     if appState.localModelState == .ready {
                         appState.localModelState = .notLoaded
-                        Task { await LocalWhisperProvider.resetLoadedModel() }
+                        Task { await LocalModelManager.resetLoadedModels() }
                     }
                 }
 
@@ -125,7 +120,7 @@ struct GeneralTab: View {
                         if appState.localModelState == .notLoaded || appState.localModelState != .ready {
                             Button("Download") {
                                 Task {
-                                    await LocalWhisperProvider.downloadAndLoadModel(appState: appState)
+                                    await LocalModelManager.downloadAndLoadSelectedModel(appState: appState)
                                 }
                             }
                         }
@@ -142,6 +137,15 @@ struct GeneralTab: View {
 
             Section("Overlay") {
                 Toggle("Show recording overlay", isOn: $appState.hudEnabled)
+
+                if appState.selectedProvider == .local,
+                   LocalModelCatalog.descriptor(for: localModelName).streamingCapable {
+                    Toggle("Live transcription in overlay", isOn: $appState.liveTranscriptionEnabled)
+                        .disabled(!appState.hudEnabled)
+                    Text("Shows the text as you speak — the overlay expands into a live transcript card.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
 
                 Toggle("Show recording indicator", isOn: $appState.hudShowIndicator)
                     .disabled(!appState.hudEnabled)

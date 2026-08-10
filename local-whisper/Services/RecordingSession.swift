@@ -32,11 +32,12 @@ final class RecordingSession {
     private var keyDownTime: Date?
     private var recordingStartInstant: Date?
     private var lastAudibleInstant: Date?
+    private var liveController: LiveTranscriptionController?
 
     /// Invoked once a recording has been captured, trimmed, and passed the minimum-duration
     /// filter. The session awaits this callback before clearing its busy flag so a new
     /// press can't race an in-flight transcription.
-    var onReadyToTranscribe: ((Data, String?, String?) async -> Void)?
+    var onReadyToTranscribe: ((TranscriptionRequest) async -> Void)?
 
     init(appState: AppState, overlayPanel: RecordingOverlayPanel) {
         self.appState = appState
@@ -117,6 +118,22 @@ final class RecordingSession {
         let shouldMuteAudio = appState.muteSystemAudioDuringRecording
         let shouldBoostInput = appState.boostInputVolumeDuringRecording
 
+        // Live-transcription arming decision. The per-app profile is resolved at
+        // key-down (the frontmost app is known now); the one-shot path keeps its
+        // key-up resolution, so a mid-recording app switch at worst shows live
+        // text for a session a profile would have routed elsewhere.
+        let frontmostAtKeyDown = NSWorkspace.shared.frontmostApplication?.bundleIdentifier
+        let resolvedAtKeyDown = appState.profileManager.resolveSettings(
+            for: frontmostAtKeyDown,
+            globalProvider: appState.selectedProvider,
+            globalLanguage: appState.language
+        )
+        let liveEligible = resolvedAtKeyDown.provider == .local
+            && LocalModelCatalog.selected.streamingCapable
+            && appState.liveTranscriptionEnabled
+            && appState.hudEnabled
+            && appState.localModelState == .ready
+
         do {
             SoundFeedback.playStartSound()
             appState.isRecording = true
@@ -129,15 +146,39 @@ final class RecordingSession {
                 inputVolumeBooster.boost()
             }
 
+            // Arm the streaming session concurrently with the start-sound delay so
+            // stream_begin costs no extra latency. A failed start leaves the session
+            // inert — recording proceeds exactly as with live mode off.
+            var armingController: LiveTranscriptionController?
+            var armingTask: Task<Bool, Never>?
+            if liveEligible {
+                let language = resolvedAtKeyDown.language == "auto" ? nil : resolvedAtKeyDown.language
+                let controller = LiveTranscriptionController(appState: appState, language: language)
+                armingController = controller
+                armingTask = Task { await controller.start() }
+            }
+
             // Delay recording start so the start sound isn't captured.
             try await Task.sleep(for: Self.recordingStartDelay)
 
+            let armed = await armingTask?.value ?? false
+
             // The user may have released during the delay; respect the cancel.
-            guard appState.isRecording else { return }
+            guard appState.isRecording else {
+                if armed { await armingController?.cancel() }
+                return
+            }
 
             recordingStartInstant = Date()
             lastAudibleInstant = Date()
             appState.silentInputWarning = false
+
+            if armed, let controller = armingController {
+                liveController = controller
+                audioRecorder.onPCMFrames = { [weak controller] frames in
+                    controller?.ingest(frames)
+                }
+            }
 
             try audioRecorder.startRecording { [weak self] level in
                 Task { @MainActor in
@@ -146,7 +187,10 @@ final class RecordingSession {
                     self.evaluateSilentInput(level: level)
                 }
             }
-            Log.coordinator.info("Recording started")
+            if liveController != nil {
+                appState.liveTranscript = AppState.LiveTranscript()
+            }
+            Log.coordinator.info("Recording started\(liveController != nil ? " (live transcription armed)" : "")")
         } catch {
             if shouldMuteAudio {
                 systemAudioMuter.unmute()
@@ -156,6 +200,11 @@ final class RecordingSession {
             }
             overlayShowTask?.cancel()
             overlayShowTask = nil
+            if let controller = liveController {
+                liveController = nil
+                appState.liveTranscript = nil
+                Task { await controller.cancel() }
+            }
             appState.isRecording = false
             overlayPanel.hideOverlay()
             isBusy = false
@@ -221,10 +270,22 @@ final class RecordingSession {
         SoundFeedback.playStopSound()
         Log.coordinator.info("Recording stopped, \(rawAudio.count) bytes")
 
-        // Trimming is CPU-bound and must not block the main actor.
+        let controller = liveController
+        liveController = nil
+
+        // Finalize the live stream concurrently with the (CPU-bound, detached) trim:
+        // the trimmed WAV is still needed for fallback, replay, and the duration
+        // filter, which stays authoritative for "too short, skip".
+        let finalizeStart = ContinuousClock.now
+        async let liveFinish = controller?.finish()
         let audioData = await Task.detached {
             AudioProcessor.trimSilence(from: rawAudio)
         }.value
+        let liveText = (await liveFinish) ?? nil
+        if controller != nil {
+            let elapsed = ContinuousClock.now - finalizeStart
+            Log.parakeet.info("Live finalize drained in \(elapsed)")
+        }
 
         // 16kHz mono 16-bit = 32000 bytes/sec + 44 byte WAV header
         let audioBytes = max(0, audioData.count - 44)
@@ -233,6 +294,7 @@ final class RecordingSession {
 
         if durationSec < minDuration {
             Log.coordinator.info("Recording too short (\(String(format: "%.2f", durationSec))s < \(String(format: "%.2f", minDuration))s), skipping")
+            appState.liveTranscript = nil
             overlayPanel.hideOverlay()
             isBusy = false
             return
@@ -240,7 +302,12 @@ final class RecordingSession {
 
         // Only flip to the transcribing state once we know we'll actually transcribe.
         appState.isTranscribing = true
-        await onReadyToTranscribe?(audioData, frontmostBundleID, capturedContext)
+        await onReadyToTranscribe?(TranscriptionRequest(
+            audioData: audioData,
+            frontmostBundleID: frontmostBundleID,
+            capturedContext: capturedContext,
+            liveText: liveText
+        ))
         isBusy = false
     }
 
@@ -250,6 +317,11 @@ final class RecordingSession {
             Log.coordinator.info("ESC pressed during recording, canceling")
             stopTask?.cancel()
             stopTask = nil
+            if let controller = liveController {
+                liveController = nil
+                Task { await controller.cancel() }
+            }
+            appState.liveTranscript = nil
             _ = audioRecorder.stopRecording()
             systemAudioMuter.unmute()
             inputVolumeBooster.restore()
@@ -282,6 +354,11 @@ final class RecordingSession {
 
         // Discard any audio captured so far. stopRecording is safe to call even
         // if the engine never started — the tap-state flag handles it.
+        if let controller = liveController {
+            liveController = nil
+            Task { await controller.cancel() }
+        }
+        appState.liveTranscript = nil
         _ = audioRecorder.stopRecording()
         systemAudioMuter.unmute()
         inputVolumeBooster.restore()

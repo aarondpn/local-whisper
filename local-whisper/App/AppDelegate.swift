@@ -23,10 +23,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         errorToastPanel = ErrorToastPanel(appState: appState)
         errorToastPanel?.beginObserving()
+
+        // Load (never download) the selected local model at launch when its files
+        // are already on disk, so local transcription — and especially the live
+        // mode — works without a Settings visit after every relaunch.
+        if appState.selectedProvider == .local {
+            let appState = appState
+            Task { await LocalModelManager.loadSelectedModelIfDownloaded(appState: appState) }
+        }
     }
 
     func applicationWillTerminate(_ notification: Notification) {
         coordinator?.stop()
         errorToastPanel?.endObserving()
+        // ggml's Metal backend (statically linked via parakeet.xcframework) fires a
+        // GGML_ASSERT in a static destructor during normal exit teardown once the GPU
+        // device was initialized, turning every quit into a crash report. All state
+        // is flushed by this point; skip atexit handlers entirely.
+        _exit(0)
     }
 }

@@ -1,5 +1,16 @@
 import Foundation
 
+/// Everything `RecordingSession` hands off once a recording cleared its gates.
+/// `liveText` is the completed streaming transcript when a live session produced
+/// one — the pipeline then skips the provider round-trip entirely; nil means
+/// transcribe `audioData` as before (live off, or the stream failed mid-utterance).
+struct TranscriptionRequest {
+    let audioData: Data
+    let frontmostBundleID: String?
+    let capturedContext: String?
+    let liveText: String?
+}
+
 /// Runs a captured audio clip through the selected provider, updates statistics, and
 /// inserts the transcribed text into the focused field. Invoked by `RecordingSession`
 /// once a recording has cleared the minimum-duration filter.
@@ -18,27 +29,44 @@ final class TranscriptionPipeline {
         }
     }
 
-    func run(audioData: Data, frontmostBundleID: String?, capturedContext: String?) async {
+    func run(_ request: TranscriptionRequest) async {
         currentTask?.cancel()
         let task: Task<Void, Never> = Task { [weak self] in
             guard let self else { return }
-            await self.execute(
-                audioData: audioData,
-                frontmostBundleID: frontmostBundleID,
-                capturedContext: capturedContext
-            )
+            await self.execute(request)
         }
         currentTask = task
         await task.value
         currentTask = nil
     }
 
-    private func execute(audioData: Data, frontmostBundleID: String?, capturedContext: String?) async {
+    private func execute(_ request: TranscriptionRequest) async {
+        let audioData = request.audioData
+        let frontmostBundleID = request.frontmostBundleID
+        let capturedContext = request.capturedContext
+
         defer {
             Task { @MainActor in
                 self.appState.isTranscribing = false
+                self.appState.liveTranscript = nil
                 self.overlayPanel.hideOverlay()
             }
+        }
+
+        // A completed live stream already produced the text — skip the provider
+        // round-trip (and the prompt/empty-retry machinery) and share the tail:
+        // statistics, last-transcription state, insertion.
+        if let liveText = request.liveText {
+            guard !liveText.isEmpty else {
+                Log.coordinator.error("Live transcription returned empty text")
+                self.appState.reportError(TranscriptionError.emptyResponse.errorDescription ?? "No transcription returned")
+                SoundFeedback.playErrorSound()
+                return
+            }
+            Log.coordinator.info("Live transcribed: \(liveText)")
+            await deliver(text: liveText, audioData: audioData, latency: 0,
+                          provider: .local, frontmostBundleID: frontmostBundleID)
+            return
         }
 
         let resolved = appState.profileManager.resolveSettings(
@@ -94,24 +122,8 @@ final class TranscriptionPipeline {
 
             Log.coordinator.info("Transcribed: \(text)")
 
-            // Record statistics
-            let audioBytes = max(0, audioData.count - 44)
-            let audioDuration = Double(audioBytes) / 32000.0
-            let event = TranscriptionEvent(
-                provider: resolved.provider.rawValue,
-                audioDurationSeconds: audioDuration,
-                transcriptionLatencySeconds: latency,
-                wordCount: text.split(separator: " ").count,
-                characterCount: text.count,
-                targetAppBundleID: frontmostBundleID,
-                text: text
-            )
-            StatisticsService.shared.record(event)
-
-            self.appState.lastTranscription = text
-            self.appState.lastAudioData = audioData
-
-            await textInsertionService.insertText(text, pressEnterAfterPaste: appState.pressEnterAfterPaste)
+            await deliver(text: text, audioData: audioData, latency: latency,
+                          provider: resolved.provider, frontmostBundleID: frontmostBundleID)
         } catch is CancellationError {
             Log.coordinator.info("Transcription cancelled by user")
             SoundFeedback.playStopSound()
@@ -127,11 +139,38 @@ final class TranscriptionPipeline {
         }
     }
 
+    /// Shared delivery tail for both the live and one-shot paths: statistics,
+    /// last-transcription state, and insertion into the focused field.
+    private func deliver(text: String, audioData: Data, latency: TimeInterval,
+                         provider: ProviderType, frontmostBundleID: String?) async {
+        let audioBytes = max(0, audioData.count - 44)
+        let audioDuration = Double(audioBytes) / 32000.0
+        let event = TranscriptionEvent(
+            provider: provider.rawValue,
+            audioDurationSeconds: audioDuration,
+            transcriptionLatencySeconds: latency,
+            wordCount: text.split(separator: " ").count,
+            characterCount: text.count,
+            targetAppBundleID: frontmostBundleID,
+            text: text
+        )
+        StatisticsService.shared.record(event)
+
+        appState.lastTranscription = text
+        appState.lastAudioData = audioData
+
+        await textInsertionService.insertText(text, pressEnterAfterPaste: appState.pressEnterAfterPaste)
+    }
+
     private func makeProvider(for type: ProviderType) -> TranscriptionProvider {
         switch type {
         case .openAI: return OpenAIWhisperProvider()
         case .groq: return GroqWhisperProvider()
-        case .local: return LocalWhisperProvider(appState: appState)
+        case .local:
+            switch LocalModelCatalog.selected.engine {
+            case .whisperKit: return LocalWhisperProvider(appState: appState)
+            case .parakeet: return ParakeetProvider()
+            }
         }
     }
 }

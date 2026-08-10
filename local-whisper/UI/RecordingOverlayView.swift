@@ -27,6 +27,33 @@ struct RecordingOverlayView: View {
     private var scale: CGFloat { appState.hudSize.scale }
 
     var body: some View {
+        Group {
+            if appState.liveCardExpanded, let live = appState.liveTranscript {
+                liveCard(live)
+                    .transition(.opacity)
+            } else {
+                pillContent
+                    .transition(.opacity)
+            }
+        }
+        .animation(.easeInOut(duration: 0.22), value: appState.liveCardExpanded)
+        .onAppear {
+            recordingStart = .now
+            withAnimation(.easeInOut(duration: 1.15).repeatForever(autoreverses: true)) {
+                pulse = true
+            }
+        }
+        .onChange(of: appState.isRecording) { _, isRecording in
+            if isRecording {
+                recordingStart = .now
+                frozenDuration = nil
+            } else {
+                frozenDuration = Date().timeIntervalSince(recordingStart)
+            }
+        }
+    }
+
+    private var pillContent: some View {
         HStack(spacing: 12 * scale) {
             if appState.hudShowIndicator {
                 recordIndicator
@@ -64,20 +91,44 @@ struct RecordingOverlayView: View {
         .accessibilityLabel(accessibilityLabel)
         .accessibilityValue(accessibilityValue)
         .accessibilityAddTraits(.updatesFrequently)
-        .onAppear {
-            recordingStart = .now
-            withAnimation(.easeInOut(duration: 1.15).repeatForever(autoreverses: true)) {
-                pulse = true
+    }
+
+    /// The expanded live-transcription card. Reuses the pill's indicator and
+    /// timer views so the morph reads as the same surface growing, not a swap.
+    private func liveCard(_ live: AppState.LiveTranscript) -> some View {
+        VStack(alignment: .leading, spacing: 6 * scale) {
+            HStack(spacing: 12 * scale) {
+                if appState.hudShowIndicator {
+                    recordIndicator
+                }
+                if appState.hudShowTimer {
+                    timerLabel
+                        .frame(width: 32 * scale, alignment: .leading)
+                }
+                Spacer(minLength: 8 * scale)
+                ZStack(alignment: .trailing) {
+                    if appState.isTranscribing {
+                        TranscribingIndicator(theme: theme, scale: scale)
+                            .transition(.opacity.combined(with: .scale(scale: 0.9)))
+                    } else if appState.silentInputWarning {
+                        SilentInputIndicator(theme: theme, scale: scale)
+                            .transition(.opacity.combined(with: .scale(scale: 0.9)))
+                    } else {
+                        AudioVisualizationView(level: appState.audioLevel, tint: theme.textColor, barCount: 26)
+                            .frame(width: 78 * scale, height: 20 * scale)
+                    }
+                }
+                .frame(height: 22 * scale)
+                .animation(.spring(response: 0.42, dampingFraction: 0.82), value: appState.isTranscribing)
+                .animation(.spring(response: 0.42, dampingFraction: 0.82), value: appState.silentInputWarning)
             }
+
+            LiveTranscriptTextView(live: live, theme: theme, scale: scale)
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         }
-        .onChange(of: appState.isRecording) { _, isRecording in
-            if isRecording {
-                recordingStart = .now
-                frozenDuration = nil
-            } else {
-                frozenDuration = Date().timeIntervalSince(recordingStart)
-            }
-        }
+        .padding(.horizontal, 18 * scale)
+        .padding(.top, 12 * scale)
+        .padding(.bottom, 14 * scale)
     }
 
     private var showVisualization: Bool {

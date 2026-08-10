@@ -62,11 +62,12 @@ On first launch macOS will ask for two permissions: microphone access, so it can
 
 ### Build from source
 
-Requires Xcode 15+ on macOS 14+.
+Requires Xcode 15+ on macOS 14+, plus `cmake` (`brew install cmake`) for the vendored ASR engine.
 
 ```bash
 git clone https://github.com/aarondpn/local-whisper.git
 cd local-whisper
+./scripts/build-parakeet.sh   # one-time: builds Vendor/parakeet.xcframework
 open local-whisper.xcodeproj
 ```
 
@@ -93,6 +94,9 @@ xcodebuild -project local-whisper.xcodeproj \
 | **Groq Whisper** | Cloud | Very fast, cheap per minute | Paste a Groq API key |
 | **OpenAI Whisper** | Cloud | Best on accented and non-English audio | Paste an OpenAI API key |
 | **Local (WhisperKit)** | On-device, Apple Silicon | Works offline, no per-minute cost | Pick a model in *Settings → General*; the first run downloads it |
+| **Local (Nemotron Streaming)** | On-device, Metal-accelerated | Live transcription — see the text appear as you speak | Pick *Nemotron Streaming 0.6B* in *Settings → General* and download it |
+
+With the Nemotron model selected, the recording overlay expands into a live transcript card while you hold the shortcut (toggle under *Settings → General → Overlay*).
 
 You can switch the active provider from the menu bar at any time, or pin one per app via profiles.
 

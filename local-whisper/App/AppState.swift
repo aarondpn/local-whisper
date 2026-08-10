@@ -46,6 +46,21 @@ final class AppState {
     var requestedSettingsTab: SettingsTab?
     var localModelState: LocalModelState = .notLoaded
 
+    /// Non-nil while a live (streaming) transcription session is active; drives
+    /// the HUD's pill→card expansion. `tentative` is reserved for engines that
+    /// expose partial hypotheses — parakeet's RNN-T finalizes only, so it stays
+    /// empty today and the card renders a listening caret instead.
+    struct LiveTranscript: Equatable {
+        var settled: String = ""
+        var tentative: String = ""
+        var streamFailed: Bool = false
+    }
+    var liveTranscript: LiveTranscript?
+
+    /// Set by `RecordingOverlayPanel` while the pill is morphed into the card so
+    /// the SwiftUI content crossfades in sync with the AppKit animation.
+    var liveCardExpanded = false
+
     @ObservationIgnored var cancelCurrentTranscription: (@MainActor () -> Void)?
 
     func reportError(_ message: String) {
@@ -104,6 +119,10 @@ final class AppState {
 
     var language: String = UserDefaults.standard.string(forKey: SettingsKeys.language) ?? "auto" {
         didSet { UserDefaults.standard.set(language, forKey: SettingsKeys.language) }
+    }
+
+    var liveTranscriptionEnabled: Bool = UserDefaults.standard.bool(forKey: SettingsKeys.liveTranscriptionEnabled) {
+        didSet { UserDefaults.standard.set(liveTranscriptionEnabled, forKey: SettingsKeys.liveTranscriptionEnabled) }
     }
 
     var muteSystemAudioDuringRecording: Bool = UserDefaults.standard.bool(forKey: SettingsKeys.muteSystemAudioDuringRecording) {
@@ -190,7 +209,7 @@ final class AppState {
             case .notLoaded: return "Local (No Model)"
             case .downloading(let progress): return "Local (Downloading \(Int(progress * 100))%)"
             case .loading: return "Local (Loading...)"
-            case .ready: return "Local (WhisperKit)"
+            case .ready: return "Local (\(LocalModelCatalog.selected.engine == .parakeet ? "Nemotron" : "Whisper"))"
             case .error(let msg): return "Local (Error: \(msg))"
             }
         }

@@ -11,12 +11,8 @@ final class TranscriptionCoordinator {
     init(appState: AppState, overlayPanel: RecordingOverlayPanel) {
         self.session = RecordingSession(appState: appState, overlayPanel: overlayPanel)
         self.pipeline = TranscriptionPipeline(appState: appState, overlayPanel: overlayPanel)
-        self.session.onReadyToTranscribe = { [weak self] audioData, bundleID, context in
-            await self?.pipeline.run(
-                audioData: audioData,
-                frontmostBundleID: bundleID,
-                capturedContext: context
-            )
+        self.session.onReadyToTranscribe = { [weak self] request in
+            await self?.pipeline.run(request)
         }
     }
 

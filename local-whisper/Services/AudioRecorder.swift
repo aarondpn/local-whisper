@@ -9,6 +9,12 @@ final class AudioRecorder {
     private var onLevelUpdate: ((Float) -> Void)?
     private var tapInstalled = false
 
+    /// Optional live consumer of the converted 16 kHz mono Float32 frames, invoked
+    /// on the tap thread with a copy of each buffer. Set before `startRecording`;
+    /// cleared automatically on `stopRecording`. The Int16/WAV accumulation is
+    /// unaffected, so the full recording always exists alongside the live feed.
+    var onPCMFrames: (([Float]) -> Void)?
+
     func startRecording(onLevelUpdate: @escaping (Float) -> Void) throws {
         // Defensive: if a previous session leaked its tap (e.g. engine stopped
         // out of band via route change), remove it before installing a new one.
@@ -73,6 +79,11 @@ final class AudioRecorder {
             if error == nil, outputBuffer.frameLength > 0 {
                 self.appendPCMData(from: outputBuffer)
                 self.updateLevel(from: outputBuffer)
+                if let onPCMFrames = self.onPCMFrames, let floatData = outputBuffer.floatChannelData {
+                    // Copy out — the converter reuses the buffer after this closure returns.
+                    let frames = Array(UnsafeBufferPointer(start: floatData[0], count: Int(outputBuffer.frameLength)))
+                    onPCMFrames(frames)
+                }
             }
         }
         tapInstalled = true
@@ -96,6 +107,7 @@ final class AudioRecorder {
             engine.stop()
         }
         onLevelUpdate = nil
+        onPCMFrames = nil
 
         return createWAV(from: audioData)
     }

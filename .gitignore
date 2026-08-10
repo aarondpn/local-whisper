@@ -5,6 +5,11 @@ DerivedData/
 *.xcodeproj/project.xcworkspace/xcuserdata/
 *.xcodeproj/project.xcworkspace/xcshareddata/
 
+# Vendored parakeet.cpp (built by scripts/build-parakeet.sh)
+Vendor/parakeet.cpp-src/
+Vendor/parakeet.xcframework/
+Vendor/build/
+
 # macOS
 .DS_Store
 

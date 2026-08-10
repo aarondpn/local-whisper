@@ -42,6 +42,23 @@ jobs:
           echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
           echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
 
+      - name: Read parakeet.cpp pin
+        id: parakeet
+        run: |
+          REF=$(grep -m1 '^PARAKEET_REF=' scripts/build-parakeet.sh | cut -d'"' -f2)
+          echo "ref=${REF}" >> "$GITHUB_OUTPUT"
+
+      - name: Cache parakeet.xcframework
+        id: parakeet-cache
+        uses: actions/cache@v4
+        with:
+          path: Vendor/parakeet.xcframework
+          key: parakeet-${{ steps.parakeet.outputs.ref }}-${{ runner.os }}-${{ hashFiles('scripts/build-parakeet.sh') }}
+
+      - name: Build parakeet.xcframework
+        if: steps.parakeet-cache.outputs.cache-hit != 'true'
+        run: ./scripts/build-parakeet.sh
+
       - name: Resolve Swift package dependencies
         run: |
           xcodebuild \
@@ -143,7 +160,7 @@ jobs:
 
             url "https://github.com/aarondpn/local-whisper/releases/download/v#{version}/LocalWhisper-#{version}.dmg"
             name "LocalWhisper"
-            desc "Menu-bar speech-to-text powered by Whisper"
+            desc "Menu-bar speech-to-text with on-device Whisper and Nemotron models"
             homepage "https://github.com/aarondpn/local-whisper"
 
             livecheck do

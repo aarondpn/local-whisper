@@ -8,6 +8,7 @@ enum Log {
     static let audio = LogCategory("Audio")
     static let textInsertion = LogCategory("TextInsertion")
     static let statistics = LogCategory("Statistics")
+    static let parakeet = LogCategory("Parakeet")
 }
 
 struct LogCategory {

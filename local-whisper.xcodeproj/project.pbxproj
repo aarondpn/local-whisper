@@ -9,10 +9,12 @@
 /* Begin PBXBuildFile section */
 		9539D98D2F4BA79E002AFCA6 /* WhisperKit in Frameworks */ = {isa = PBXBuildFile; productRef = 9539D98C2F4BA79E002AFCA6 /* WhisperKit */; };
 		9539D98F2F4BA79E002AFCA6 /* whisperkit-cli in Frameworks */ = {isa = PBXBuildFile; productRef = 9539D98E2F4BA79E002AFCA6 /* whisperkit-cli */; };
+		95FA4EE22F4BA79E00C0FFE2 /* parakeet.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = 95FA4EE12F4BA79E00C0FFE1 /* parakeet.xcframework */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
 		955E1F152F49C2A100BCAAAE /* LocalWhisper.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; name = LocalWhisper.app; path = "LocalWhisper-Debug.app"; sourceTree = BUILT_PRODUCTS_DIR; };
+		95FA4EE12F4BA79E00C0FFE1 /* parakeet.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = parakeet.xcframework; path = Vendor/parakeet.xcframework; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
@@ -30,6 +32,7 @@
 			files = (
 				9539D98D2F4BA79E002AFCA6 /* WhisperKit in Frameworks */,
 				9539D98F2F4BA79E002AFCA6 /* whisperkit-cli in Frameworks */,
+				95FA4EE22F4BA79E00C0FFE2 /* parakeet.xcframework in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -40,6 +43,7 @@
 			isa = PBXGroup;
 			children = (
 				955E1F172F49C2A100BCAAAE /* local-whisper */,
+				95FA4EE12F4BA79E00C0FFE1 /* parakeet.xcframework */,
 				955E1F162F49C2A100BCAAAE /* Products */,
 			);
 			sourceTree = "<group>";
@@ -296,6 +300,10 @@
 					"@executable_path/../Frameworks",
 				);
 				MARKETING_VERSION = 1.0;
+				OTHER_LDFLAGS = (
+					"$(inherited)",
+					"-lc++",
+				);
 				PRODUCT_BUNDLE_IDENTIFIER = "com.aarondpn.local-whisper.debug";
 				PRODUCT_NAME = "LocalWhisper-Debug";
 				STRING_CATALOG_GENERATE_SYMBOLS = YES;
@@ -326,6 +334,10 @@
 					"@executable_path/../Frameworks",
 				);
 				MARKETING_VERSION = 1.0;
+				OTHER_LDFLAGS = (
+					"$(inherited)",
+					"-lc++",
+				);
 				PRODUCT_BUNDLE_IDENTIFIER = "com.aarondpn.local-whisper";
 				PRODUCT_NAME = LocalWhisper;
 				STRING_CATALOG_GENERATE_SYMBOLS = YES;

@@ -11,7 +11,7 @@ enum ProviderType: String, CaseIterable, Identifiable {
         switch self {
         case .openAI: return "OpenAI Whisper"
         case .groq: return "Groq Whisper"
-        case .local: return "Local (WhisperKit)"
+        case .local: return "Local (On-Device)"
         }
     }
 }

@@ -31,6 +31,7 @@ enum SettingsKeys {
     static let hudShowTimer = "hudShowTimer"
     static let hudShowIndicator = "hudShowIndicator"
     static let hudSize = "hudSize"
+    static let liveTranscriptionEnabled = "liveTranscriptionEnabled"
 
     static let prodBundleID = "com.aarondpn.local-whisper"
 
@@ -65,6 +66,7 @@ enum SettingsKeys {
             hudShowTimer: true,
             hudShowIndicator: false,
             hudSize: HUDSize.regular.rawValue,
+            liveTranscriptionEnabled: true,
         ])
     }
 }
