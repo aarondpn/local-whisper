@@ -123,6 +123,17 @@ enum ContextProvider {
 
     // MARK: - Accessibility readers
 
+    /// Per-element AX timeout for context capture. This runs synchronously on the main
+    /// thread at key-up; the context is a nice-to-have, so a sluggish target app should
+    /// cost at most a fraction of a second, not the 1 s process-wide default (see
+    /// `AccessibilityTimeout`).
+    private static let elementTimeout: Float = 0.25
+
+    private static func timeboxed(_ element: AXUIElement) -> AXUIElement {
+        AXUIElementSetMessagingTimeout(element, elementTimeout)
+        return element
+    }
+
     /// Reads the text before the caret in the focused UI element and runs it through the
     /// three-strategy context extractor. Returns nil if the element exposes no text.
     private static func contextBeforeCaret(isTerminal: Bool) -> String? {
@@ -135,7 +146,7 @@ enum ContextProvider {
             &focusedRef
         ) == .success, let focusedRef,
               CFGetTypeID(focusedRef) == AXUIElementGetTypeID() else { return nil }
-        let element = focusedRef as! AXUIElement
+        let element = timeboxed(focusedRef as! AXUIElement)
 
         var valueRef: CFTypeRef?
         guard AXUIElementCopyAttributeValue(
@@ -290,7 +301,7 @@ enum ContextProvider {
             &appRef
         ) == .success, let appRef,
               CFGetTypeID(appRef) == AXUIElementGetTypeID() else { return nil }
-        let app = appRef as! AXUIElement
+        let app = timeboxed(appRef as! AXUIElement)
 
         var windowRef: CFTypeRef?
         guard AXUIElementCopyAttributeValue(
@@ -299,7 +310,7 @@ enum ContextProvider {
             &windowRef
         ) == .success, let windowRef,
               CFGetTypeID(windowRef) == AXUIElementGetTypeID() else { return nil }
-        let window = windowRef as! AXUIElement
+        let window = timeboxed(windowRef as! AXUIElement)
 
         var titleRef: CFTypeRef?
         guard AXUIElementCopyAttributeValue(
