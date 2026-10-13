@@ -1,23 +1,28 @@
 import CoreAudio
 
 final class SystemAudioMuter {
-    private var wasAlreadyMuted = false
+    /// The device this instance muted, if any. `unmute()` only ever reverses our own
+    /// `mute()` — so an unbalanced call (e.g. a press cancelled before it muted) can't
+    /// unmute audio the user muted themselves, and a default-output switch mid-recording
+    /// still restores the device we actually touched.
+    private var mutedDeviceID: AudioDeviceID?
 
     func mute() {
-        guard let deviceID = defaultOutputDevice() else { return }
+        guard mutedDeviceID == nil, let deviceID = defaultOutputDevice() else { return }
 
-        wasAlreadyMuted = isMuted(deviceID)
-        if wasAlreadyMuted {
+        if isMuted(deviceID) {
             Log.coordinator.info("System audio already muted, skipping")
             return
         }
 
         setMute(deviceID, muted: true)
+        mutedDeviceID = deviceID
         Log.coordinator.info("System audio muted for recording")
     }
 
     func unmute() {
-        guard !wasAlreadyMuted, let deviceID = defaultOutputDevice() else { return }
+        guard let deviceID = mutedDeviceID else { return }
+        mutedDeviceID = nil
 
         setMute(deviceID, muted: false)
         Log.coordinator.info("System audio unmuted after recording")

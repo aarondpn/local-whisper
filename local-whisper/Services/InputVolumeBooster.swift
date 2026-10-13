@@ -5,7 +5,9 @@ final class InputVolumeBooster {
     private var boostedDeviceID: AudioDeviceID?
 
     func boost() {
-        guard let deviceID = activeInputDevice() else { return }
+        // Already boosted: a second boost would overwrite the saved levels with 1.0 and
+        // leave the input permanently at max after restore.
+        guard boostedDeviceID == nil, let deviceID = activeInputDevice() else { return }
 
         let channels = volumeChannels(for: deviceID)
         guard !channels.isEmpty else {
