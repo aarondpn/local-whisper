@@ -33,6 +33,10 @@ final class DraggableRootView: NSView {
 final class RecordingOverlayPanel: NSPanel {
     private let appState: AppState
     private var showTime: CFAbsoluteTime = 0
+    /// Bumped on every show. Deferred hide steps (min-display wait, card collapse, fade-out
+    /// completion) carry the value they started with and bail if a newer show happened —
+    /// otherwise a quick follow-up press gets its fresh HUD ordered out mid-recording.
+    private var presentationID = 0
     private let minDisplayDuration: CFTimeInterval = 0.25
     private var isProgrammaticMove = false
     private var isPositioningSession = false
@@ -506,6 +510,7 @@ final class RecordingOverlayPanel: NSPanel {
         setFrame(NSRect(origin: origin, size: NSSize(width: windowWidth, height: windowHeight)), display: false)
         isProgrammaticMove = false
         resetToPillGeometry()
+        presentationID &+= 1
         orderFrontRegardless()
         showTime = CFAbsoluteTimeGetCurrent()
 
@@ -542,12 +547,14 @@ final class RecordingOverlayPanel: NSPanel {
     }
 
     func hideOverlay() {
+        let presentation = presentationID
         // Expanded card: settle beat → collapse → fade, as three distinct fast
         // movements rather than one simultaneous mush.
         if isExpanded {
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) { [weak self] in
-                self?.collapseToPill { [weak self] in
-                    self?.fadeOut()
+                guard let self, self.presentationID == presentation else { return }
+                self.collapseToPill { [weak self] in
+                    self?.fadeOut(presentation)
                 }
             }
             return
@@ -556,14 +563,16 @@ final class RecordingOverlayPanel: NSPanel {
         let remaining = minDisplayDuration - elapsed
         if remaining > 0 {
             DispatchQueue.main.asyncAfter(deadline: .now() + remaining) { [weak self] in
-                self?.fadeOut()
+                self?.fadeOut(presentation)
             }
         } else {
-            fadeOut()
+            fadeOut(presentation)
         }
     }
 
-    private func fadeOut() {
+    private func fadeOut(_ presentation: Int) {
+        // A newer show superseded this hide.
+        guard presentationID == presentation else { return }
         // A positioning session keeps the overlay visible until the user clicks Done.
         if isPositioningSession { return }
         guard let layer = pillHost?.layer else {
@@ -596,7 +605,8 @@ final class RecordingOverlayPanel: NSPanel {
 
         CATransaction.begin()
         CATransaction.setCompletionBlock { [weak self] in
-            guard let self else { return }
+            // showOverlay's removeAllAnimations fires this early; don't order out the new HUD.
+            guard let self, self.presentationID == presentation else { return }
             self.orderOut(nil)
             // Reset model state so the next show starts from a clean slate.
             if let layer = self.pillHost?.layer {
