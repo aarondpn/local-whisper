@@ -1,37 +1,71 @@
 import AVFoundation
 import Foundation
 
-final class AudioRecorder {
-    private var engine = AVAudioEngine()
-    private var audioData = Data()
+/// Captures microphone audio as 16 kHz mono PCM.
+///
+/// All engine work runs on a private serial queue: creating and starting an
+/// `AVAudioEngine` can block for a second or more (Bluetooth profile switches, a
+/// just-woken HAL), and doing that on the main thread stalls the hotkey event tap
+/// until macOS disables it — which is how key-ups get lost. Calls are enqueued
+/// synchronously in call order, so a `discardRecording()` issued after a
+/// `startRecording(...)` always runs after it, even if the start is still in flight.
+final class AudioRecorder: @unchecked Sendable {
+    private let queue = DispatchQueue(label: "com.aarondpn.local-whisper.audio-recorder", qos: .userInitiated)
     private let targetSampleRate: Double = 16000
     private let targetChannels: AVAudioChannelCount = 1
-    private var onLevelUpdate: ((Float) -> Void)?
+
+    // Confined to `queue`.
+    private var engine: AVAudioEngine?
     private var tapInstalled = false
+    private var accumulator: PCMAccumulator?
 
-    /// Optional live consumer of the converted 16 kHz mono Float32 frames, invoked
-    /// on the tap thread with a copy of each buffer. Set before `startRecording`;
-    /// cleared automatically on `stopRecording`. The Int16/WAV accumulation is
-    /// unaffected, so the full recording always exists alongside the live feed.
-    var onPCMFrames: (([Float]) -> Void)?
-
-    func startRecording(onLevelUpdate: @escaping (Float) -> Void) throws {
-        // Defensive: if a previous session leaked its tap (e.g. engine stopped
-        // out of band via route change), remove it before installing a new one.
-        if tapInstalled {
-            engine.inputNode.removeTap(onBus: 0)
-            tapInstalled = false
+    /// `onLevelUpdate` is delivered on the main queue. `onPCMFrames` is an optional live
+    /// consumer of the converted 16 kHz mono Float32 frames, invoked on the tap thread
+    /// with a copy of each buffer. The Int16/WAV accumulation is unaffected, so the full
+    /// recording always exists alongside the live feed.
+    func startRecording(
+        onLevelUpdate: @escaping @Sendable (Float) -> Void,
+        onPCMFrames: (@Sendable ([Float]) -> Void)? = nil
+    ) async throws {
+        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+            queue.async {
+                do {
+                    try self.start(onLevelUpdate: onLevelUpdate, onPCMFrames: onPCMFrames)
+                    continuation.resume()
+                } catch {
+                    continuation.resume(throwing: error)
+                }
+            }
         }
+    }
+
+    /// Stops capture and returns everything recorded as a WAV.
+    func stopRecording() async -> Data {
+        await withCheckedContinuation { continuation in
+            queue.async {
+                let pcm = self.stop()
+                continuation.resume(returning: self.createWAV(from: pcm))
+            }
+        }
+    }
+
+    /// Stops capture and drops the audio. Fire-and-forget; safe when nothing is running.
+    func discardRecording() {
+        queue.async {
+            _ = self.stop()
+        }
+    }
+
+    private func start(onLevelUpdate: @escaping @Sendable (Float) -> Void, onPCMFrames: (@Sendable ([Float]) -> Void)?) throws {
+        // Defensive: never leave a previous engine running underneath a new one.
+        _ = stop()
 
         // Build a fresh engine every session. AVAudioEngine caches its input node and the
         // hardware format at construction time; after a sleep/wake cycle or an input-device
         // change those go stale, and a reused engine then captures silence or fails to start.
         // Recreating runs once per hotkey press (not in any hot path), so the cost is trivial
         // and it makes capture survive sleep, wake, and device swaps without a restart.
-        engine = AVAudioEngine()
-
-        self.onLevelUpdate = onLevelUpdate
-        audioData = Data()
+        let engine = AVAudioEngine()
 
         let storedUID = UserDefaults.standard.string(forKey: SettingsKeys.selectedInputDeviceUID) ?? ""
         if !storedUID.isEmpty, let deviceID = AudioDeviceManager.deviceID(forUID: storedUID) {
@@ -61,10 +95,13 @@ final class AudioRecorder {
             throw RecorderError.converterCreationFailed
         }
 
-        let bufferSize: AVAudioFrameCount = 4096
-        inputNode.installTap(onBus: 0, bufferSize: bufferSize, format: inputFormat) { [weak self] buffer, _ in
-            guard let self else { return }
+        // A fresh accumulator per session: a late buffer from a previous engine can never
+        // bleed into this recording.
+        let accumulator = PCMAccumulator()
+        let targetSampleRate = self.targetSampleRate
 
+        let bufferSize: AVAudioFrameCount = 4096
+        inputNode.installTap(onBus: 0, bufferSize: bufferSize, format: inputFormat) { buffer, _ in
             let ratio = targetSampleRate / inputFormat.sampleRate
             let outputFrameCapacity = AVAudioFrameCount(Double(buffer.frameLength) * ratio) + 1
 
@@ -77,59 +114,51 @@ final class AudioRecorder {
             }
 
             if error == nil, outputBuffer.frameLength > 0 {
-                self.appendPCMData(from: outputBuffer)
-                self.updateLevel(from: outputBuffer)
-                if let onPCMFrames = self.onPCMFrames, let floatData = outputBuffer.floatChannelData {
+                accumulator.append(outputBuffer)
+                let level = Self.level(of: outputBuffer)
+                DispatchQueue.main.async {
+                    onLevelUpdate(level)
+                }
+                if let onPCMFrames, let floatData = outputBuffer.floatChannelData {
                     // Copy out — the converter reuses the buffer after this closure returns.
                     let frames = Array(UnsafeBufferPointer(start: floatData[0], count: Int(outputBuffer.frameLength)))
                     onPCMFrames(frames)
                 }
             }
         }
-        tapInstalled = true
 
         do {
             try engine.start()
         } catch {
             // If start fails, make sure we don't leak the tap we just installed.
-            engine.inputNode.removeTap(onBus: 0)
-            tapInstalled = false
+            inputNode.removeTap(onBus: 0)
             throw error
         }
+
+        self.engine = engine
+        self.tapInstalled = true
+        self.accumulator = accumulator
     }
 
-    func stopRecording() -> Data {
-        if tapInstalled {
-            engine.inputNode.removeTap(onBus: 0)
-            tapInstalled = false
+    /// Returns the raw PCM captured so far. Idempotent.
+    private func stop() -> Data {
+        if let engine {
+            if tapInstalled {
+                engine.inputNode.removeTap(onBus: 0)
+            }
+            if engine.isRunning {
+                engine.stop()
+            }
         }
-        if engine.isRunning {
-            engine.stop()
-        }
-        onLevelUpdate = nil
-        onPCMFrames = nil
-
-        return createWAV(from: audioData)
+        engine = nil
+        tapInstalled = false
+        let pcm = accumulator?.take() ?? Data()
+        accumulator = nil
+        return pcm
     }
 
-    private func appendPCMData(from buffer: AVAudioPCMBuffer) {
-        guard let floatData = buffer.floatChannelData else { return }
-        let frameCount = Int(buffer.frameLength)
-        let channelData = floatData[0]
-
-        var int16Data = [Int16](repeating: 0, count: frameCount)
-        for i in 0..<frameCount {
-            let sample = max(-1, min(1, channelData[i]))
-            int16Data[i] = Int16(sample * Float(Int16.max))
-        }
-
-        int16Data.withUnsafeBufferPointer { ptr in
-            audioData.append(UnsafeBufferPointer(start: ptr.baseAddress, count: ptr.count))
-        }
-    }
-
-    private func updateLevel(from buffer: AVAudioPCMBuffer) {
-        guard let channelData = buffer.floatChannelData else { return }
+    private static func level(of buffer: AVAudioPCMBuffer) -> Float {
+        guard let channelData = buffer.floatChannelData else { return 0 }
         let frameCount = Int(buffer.frameLength)
         let data = channelData[0]
 
@@ -139,11 +168,7 @@ final class AudioRecorder {
         }
         let rms = sqrt(sum / Float(frameCount))
         let db = 20 * log10(max(rms, 1e-6))
-        let normalized = max(0, min(1, (db + 50) / 50))
-
-        DispatchQueue.main.async { [weak self] in
-            self?.onLevelUpdate?(normalized)
-        }
+        return max(0, min(1, (db + 50) / 50))
     }
 
     private func createWAV(from pcmData: Data) -> Data {
@@ -191,5 +216,37 @@ enum RecorderError: LocalizedError {
         case .converterCreationFailed: return "Failed to create audio converter"
         case .noInputAvailable: return "No microphone input available"
         }
+    }
+}
+
+/// Int16 PCM written on the audio tap thread and drained on the recorder queue.
+private final class PCMAccumulator: @unchecked Sendable {
+    private let lock = NSLock()
+    private var data = Data()
+
+    func append(_ buffer: AVAudioPCMBuffer) {
+        guard let floatData = buffer.floatChannelData else { return }
+        let frameCount = Int(buffer.frameLength)
+        let channelData = floatData[0]
+
+        var int16Data = [Int16](repeating: 0, count: frameCount)
+        for i in 0..<frameCount {
+            let sample = max(-1, min(1, channelData[i]))
+            int16Data[i] = Int16(sample * Float(Int16.max))
+        }
+
+        lock.lock()
+        defer { lock.unlock() }
+        int16Data.withUnsafeBufferPointer { ptr in
+            data.append(UnsafeBufferPointer(start: ptr.baseAddress, count: ptr.count))
+        }
+    }
+
+    func take() -> Data {
+        lock.lock()
+        defer { lock.unlock() }
+        let taken = data
+        data = Data()
+        return taken
     }
 }
