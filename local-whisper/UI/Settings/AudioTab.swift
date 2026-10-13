@@ -194,32 +194,41 @@ struct AudioTab: View {
         testProcessedAudio = nil
 
         let recorder = AudioRecorder()
-        do {
-            try recorder.startRecording { level in
-                testAudioLevel = level
+        testRecorder = recorder
+        isTestRecording = true
+        Task {
+            do {
+                try await recorder.startRecording { level in
+                    Task { @MainActor in
+                        guard testRecorder === recorder else { return }
+                        testAudioLevel = level
+                    }
+                }
+            } catch {
+                Log.audio.error("Test recording failed to start: \(error)")
+                if testRecorder === recorder {
+                    testRecorder = nil
+                    isTestRecording = false
+                }
             }
-            testRecorder = recorder
-            isTestRecording = true
-        } catch {
-            Log.audio.error("Test recording failed to start: \(error)")
         }
     }
 
     private func stopTestRecording() {
         guard let recorder = testRecorder else { return }
-        let rawAudio = recorder.stopRecording()
         testRecorder = nil
         isTestRecording = false
         testAudioLevel = 0
-        testRawAudio = rawAudio
-
         isProcessing = true
-        DispatchQueue.global(qos: .userInitiated).async {
-            let processed = AudioProcessor.trimSilence(from: rawAudio)
-            DispatchQueue.main.async {
-                testProcessedAudio = processed
-                isProcessing = false
-            }
+
+        Task {
+            let rawAudio = await recorder.stopRecording()
+            testRawAudio = rawAudio
+            let processed = await Task.detached {
+                AudioProcessor.trimSilence(from: rawAudio)
+            }.value
+            testProcessedAudio = processed
+            isProcessing = false
         }
     }
 

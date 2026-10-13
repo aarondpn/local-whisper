@@ -14,13 +14,32 @@
 
 /* Begin PBXFileReference section */
 		955E1F152F49C2A100BCAAAE /* LocalWhisper.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; name = LocalWhisper.app; path = "LocalWhisper-Debug.app"; sourceTree = BUILT_PRODUCTS_DIR; };
+		A7E5F0012F60000000000001 /* local-whisperTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = "local-whisperTests.xctest"; sourceTree = BUILT_PRODUCTS_DIR; };
 		95FA4EE12F4BA79E00C0FFE1 /* parakeet.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = parakeet.xcframework; path = Vendor/parakeet.xcframework; sourceTree = "<group>"; };
 /* End PBXFileReference section */
+
+/* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
+		A7E5F0032F60000000000001 /* Exceptions for "local-whisper" folder in "local-whisperTests" target */ = {
+			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
+			membershipExceptions = (
+				Services/PressLifecycle.swift,
+			);
+			target = A7E5F0042F60000000000001 /* local-whisperTests */;
+		};
+/* End PBXFileSystemSynchronizedBuildFileExceptionSet section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
 		955E1F172F49C2A100BCAAAE /* local-whisper */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
+			exceptions = (
+				A7E5F0032F60000000000001 /* Exceptions for "local-whisper" folder in "local-whisperTests" target */,
+			);
 			path = "local-whisper";
+			sourceTree = "<group>";
+		};
+		A7E5F0022F60000000000001 /* local-whisperTests */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			path = "local-whisperTests";
 			sourceTree = "<group>";
 		};
 /* End PBXFileSystemSynchronizedRootGroup section */
@@ -36,6 +55,13 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		A7E5F0062F60000000000001 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 /* End PBXFrameworksBuildPhase section */
 
 /* Begin PBXGroup section */
@@ -43,6 +69,7 @@
 			isa = PBXGroup;
 			children = (
 				955E1F172F49C2A100BCAAAE /* local-whisper */,
+				A7E5F0022F60000000000001 /* local-whisperTests */,
 				95FA4EE12F4BA79E00C0FFE1 /* parakeet.xcframework */,
 				955E1F162F49C2A100BCAAAE /* Products */,
 			);
@@ -52,6 +79,7 @@
 			isa = PBXGroup;
 			children = (
 				955E1F152F49C2A100BCAAAE /* LocalWhisper.app */,
+				A7E5F0012F60000000000001 /* local-whisperTests.xctest */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -84,6 +112,28 @@
 			productReference = 955E1F152F49C2A100BCAAAE /* LocalWhisper.app */;
 			productType = "com.apple.product-type.application";
 		};
+		A7E5F0042F60000000000001 /* local-whisperTests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = A7E5F0082F60000000000001 /* Build configuration list for PBXNativeTarget "local-whisperTests" */;
+			buildPhases = (
+				A7E5F0052F60000000000001 /* Sources */,
+				A7E5F0062F60000000000001 /* Frameworks */,
+				A7E5F0072F60000000000001 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			fileSystemSynchronizedGroups = (
+				A7E5F0022F60000000000001 /* local-whisperTests */,
+			);
+			name = "local-whisperTests";
+			packageProductDependencies = (
+			);
+			productName = "local-whisperTests";
+			productReference = A7E5F0012F60000000000001 /* local-whisperTests.xctest */;
+			productType = "com.apple.product-type.bundle.unit-test";
+		};
 /* End PBXNativeTarget section */
 
 /* Begin PBXProject section */
@@ -95,6 +145,9 @@
 				LastUpgradeCheck = 2620;
 				TargetAttributes = {
 					955E1F142F49C2A100BCAAAE = {
+						CreatedOnToolsVersion = 26.2;
+					};
+					A7E5F0042F60000000000001 = {
 						CreatedOnToolsVersion = 26.2;
 					};
 				};
@@ -117,12 +170,20 @@
 			projectRoot = "";
 			targets = (
 				955E1F142F49C2A100BCAAAE /* local-whisper */,
+				A7E5F0042F60000000000001 /* local-whisperTests */,
 			);
 		};
 /* End PBXProject section */
 
 /* Begin PBXResourcesBuildPhase section */
 		955E1F132F49C2A100BCAAAE /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		A7E5F0072F60000000000001 /* Resources */ = {
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
@@ -151,6 +212,13 @@
 
 /* Begin PBXSourcesBuildPhase section */
 		955E1F112F49C2A100BCAAAE /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		A7E5F0052F60000000000001 /* Sources */ = {
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
@@ -348,6 +416,38 @@
 			};
 			name = Release;
 		};
+		A7E5F0092F60000000000001 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				GENERATE_INFOPLIST_FILE = YES;
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = "com.aarondpn.local-whisperTests";
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_EMIT_LOC_STRINGS = NO;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+			};
+			name = Debug;
+		};
+		A7E5F00A2F60000000000001 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				GENERATE_INFOPLIST_FILE = YES;
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = "com.aarondpn.local-whisperTests";
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_EMIT_LOC_STRINGS = NO;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+			};
+			name = Release;
+		};
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
@@ -365,6 +465,15 @@
 			buildConfigurations = (
 				955E1F1F2F49C2A100BCAAAE /* Debug */,
 				955E1F202F49C2A100BCAAAE /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		A7E5F0082F60000000000001 /* Build configuration list for PBXNativeTarget "local-whisperTests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				A7E5F0092F60000000000001 /* Debug */,
+				A7E5F00A2F60000000000001 /* Release */,
 			);
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;

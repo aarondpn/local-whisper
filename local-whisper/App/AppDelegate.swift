@@ -10,6 +10,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         SettingsKeys.registerDefaults()
+        AccessibilityTimeout.install()
 
         Log.app.info("Bundle ID: \(Bundle.main.bundleIdentifier ?? "nil")")
         Log.app.info("Executable: \(Bundle.main.executableURL?.path ?? "nil")")
