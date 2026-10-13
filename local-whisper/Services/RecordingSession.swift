@@ -213,8 +213,12 @@ final class RecordingSession {
         }
 
         // Released or escaped while the engine was starting. The cancel path enqueued a
-        // discard behind this start on the recorder queue, so the mic is already closing.
-        guard lifecycle.captureBegan(token) else { return }
+        // discard behind this start on the recorder queue, so the mic is already closing;
+        // discard again anyway so a stale start can never leave the mic open.
+        guard lifecycle.captureBegan(token) else {
+            audioRecorder.discardRecording()
+            return
+        }
 
         if liveController != nil {
             appState.liveTranscript = AppState.LiveTranscript()

@@ -9,6 +9,10 @@ import Foundation
 /// until macOS disables it — which is how key-ups get lost. Calls are enqueued
 /// synchronously in call order, so a `discardRecording()` issued after a
 /// `startRecording(...)` always runs after it, even if the start is still in flight.
+/// The async entry points are `@MainActor` so that ordering holds regardless of
+/// whether the toolchain runs nonisolated async functions on the caller's actor
+/// (`NonisolatedNonsendingByDefault`) — without it they would hop to the global
+/// executor before enqueuing, and a later synchronous discard could overtake them.
 final class AudioRecorder: @unchecked Sendable {
     private let queue = DispatchQueue(label: "com.aarondpn.local-whisper.audio-recorder", qos: .userInitiated)
     private let targetSampleRate: Double = 16000
@@ -23,6 +27,7 @@ final class AudioRecorder: @unchecked Sendable {
     /// consumer of the converted 16 kHz mono Float32 frames, invoked on the tap thread
     /// with a copy of each buffer. The Int16/WAV accumulation is unaffected, so the full
     /// recording always exists alongside the live feed.
+    @MainActor
     func startRecording(
         onLevelUpdate: @escaping @Sendable (Float) -> Void,
         onPCMFrames: (@Sendable ([Float]) -> Void)? = nil
@@ -40,6 +45,7 @@ final class AudioRecorder: @unchecked Sendable {
     }
 
     /// Stops capture and returns everything recorded as a WAV.
+    @MainActor
     func stopRecording() async -> Data {
         await withCheckedContinuation { continuation in
             queue.async {
