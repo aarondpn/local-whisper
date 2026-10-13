@@ -6,6 +6,10 @@ final class HotkeyService {
     private var eventTap: CFMachPort?
     private var runLoopSource: CFRunLoopSource?
     private var isKeyDown = false
+    /// Whether the hardware key state confirmed the hotkey at the current key-down. Only
+    /// then is `reconcileHeldKey()` allowed to synthesize a release: if the state API
+    /// can't see this key, a "not held" reading means nothing and must be ignored.
+    private var physicalStateConfirmed = false
     private var retryTimer: Timer?
     private var healthTimer: Timer?
     private var wakeObserver: Any?
@@ -53,6 +57,7 @@ final class HotkeyService {
 
         teardownTap()
         isKeyDown = false
+        physicalStateConfirmed = false
     }
 
     /// Disables and unregisters the event tap. Idempotent; safe to call when no tap exists.
@@ -98,6 +103,48 @@ final class HotkeyService {
         if let tap = eventTap, CGEvent.tapIsEnabled(tap: tap) { return }
         Log.hotkey.warning("Event tap not alive — recreating")
         createEventTap()
+        // A key-up that arrived while the tap was dead never reached us.
+        reconcileHeldKey()
+    }
+
+    /// Delivers the key-up the tap missed. While the main thread is blocked long enough,
+    /// macOS disables the tap (`.tapDisabledByTimeout`) and routes events past it; a
+    /// release in that window is simply gone, and without this the recording would run
+    /// until the next press. Safe to call any time: it only acts when we believe the key
+    /// is down, the hardware state was verified at key-down, and the key is now up.
+    func reconcileHeldKey() {
+        guard hasMissedRelease else { return }
+        Log.hotkey.warning("Hotkey released without a key-up event — synthesizing release")
+        isKeyDown = false
+        physicalStateConfirmed = false
+        onKeyUp?()
+    }
+
+    /// True when we think the hotkey is down but the hardware says it is up.
+    var hasMissedRelease: Bool {
+        isKeyDown && physicalStateConfirmed && !isHotkeyPhysicallyDown()
+    }
+
+    /// Reads the HID-level key state, which sits below every session event tap — including
+    /// ours, which swallows the hotkey — so it reflects the physical key.
+    private func isHotkeyPhysicallyDown() -> Bool {
+        if isFnOnlyHotkey {
+            return CGEventSource.flagsState(.hidSystemState).contains(.maskSecondaryFn)
+        }
+        return CGEventSource.keyState(.hidSystemState, key: CGKeyCode(configuration.keyCode))
+    }
+
+    private var isFnOnlyHotkey: Bool {
+        configuration.keyCode == UInt16(kVK_Function) && configuration.modifiers.isEmpty
+    }
+
+    private func registerKeyDown() {
+        isKeyDown = true
+        physicalStateConfirmed = isHotkeyPhysicallyDown()
+        if !physicalStateConfirmed {
+            Log.hotkey.info("Hardware key state not visible for hotkey; missed-release recovery disabled for this press")
+        }
+        onKeyDown?()
     }
 
     func reloadConfiguration() {
@@ -131,7 +178,7 @@ final class HotkeyService {
             options: .defaultTap,
             eventsOfInterest: eventMask,
             callback: { _, type, event, refcon in
-                guard let refcon else { return Unmanaged.passRetained(event) }
+                guard let refcon else { return Unmanaged.passUnretained(event) }
                 let service = Unmanaged<HotkeyService>.fromOpaque(refcon).takeUnretainedValue()
                 return service.handleEvent(type: type, event: event)
             },
@@ -154,7 +201,9 @@ final class HotkeyService {
                 CGEvent.tapEnable(tap: tap, enable: true)
                 Log.hotkey.warning("Re-enabled event tap after timeout")
             }
-            return Unmanaged.passRetained(event)
+            // Events that arrived while the tap was disabled bypassed us entirely.
+            reconcileHeldKey()
+            return Unmanaged.passUnretained(event)
         }
 
         let keyCode = UInt16(event.getIntegerValueField(.keyboardEventKeycode))
@@ -167,21 +216,20 @@ final class HotkeyService {
                 onEscape()
             }
             // Don't swallow — other apps may want ESC too.
-            return Unmanaged.passRetained(event)
+            return Unmanaged.passUnretained(event)
         }
 
         guard configuration.isConfigured else {
-            return Unmanaged.passRetained(event)
+            return Unmanaged.passUnretained(event)
         }
 
         // Fn key only produces flagsChanged events, handle separately
-        if configuration.keyCode == UInt16(kVK_Function) && configuration.modifiers.isEmpty {
+        if isFnOnlyHotkey {
             if type == .flagsChanged {
                 let fnDown = flags.contains(.maskSecondaryFn)
                 if fnDown && !isKeyDown {
-                    isKeyDown = true
                     Log.hotkey.debug("Fn key DOWN")
-                    onKeyDown?()
+                    registerKeyDown()
                     return nil
                 } else if !fnDown && isKeyDown {
                     isKeyDown = false
@@ -190,7 +238,7 @@ final class HotkeyService {
                     return nil
                 }
             }
-            return Unmanaged.passRetained(event)
+            return Unmanaged.passUnretained(event)
         }
 
         let configModifiers = configuration.modifiers
@@ -204,9 +252,8 @@ final class HotkeyService {
                 if type == .keyDown && modifiersMatch && keyMatches {
                     let isRepeat = event.getIntegerValueField(.keyboardEventAutorepeat) != 0
                     if !isRepeat && !isKeyDown {
-                        isKeyDown = true
                         Log.hotkey.debug("Key DOWN (keyCode=\(keyCode))")
-                        onKeyDown?()
+                        registerKeyDown()
                     }
                     return nil
                 } else if type == .keyUp && keyMatches && isKeyDown {
@@ -220,9 +267,8 @@ final class HotkeyService {
             if type == .keyDown && keyCode == configuration.keyCode {
                 let isRepeat = event.getIntegerValueField(.keyboardEventAutorepeat) != 0
                 if !isRepeat && !isKeyDown {
-                    isKeyDown = true
                     Log.hotkey.debug("Key DOWN (keyCode=\(keyCode))")
-                    onKeyDown?()
+                    registerKeyDown()
                 }
                 return nil
             } else if type == .keyUp && keyCode == configuration.keyCode && isKeyDown {
@@ -233,6 +279,6 @@ final class HotkeyService {
             }
         }
 
-        return Unmanaged.passRetained(event)
+        return Unmanaged.passUnretained(event)
     }
 }
