@@ -6,6 +6,7 @@ enum Log {
     static let hotkey = LogCategory("Hotkey")
     static let coordinator = LogCategory("Coordinator")
     static let audio = LogCategory("Audio")
+    static let network = LogCategory("Network")
     static let textInsertion = LogCategory("TextInsertion")
     static let statistics = LogCategory("Statistics")
     static let parakeet = LogCategory("Parakeet")

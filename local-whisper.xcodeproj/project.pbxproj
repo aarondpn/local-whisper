@@ -23,6 +23,8 @@
 			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
 			membershipExceptions = (
 				Services/PressLifecycle.swift,
+				Transcription/HTTP1ResponseParser.swift,
+				Transcription/HedgedRequest.swift,
 			);
 			target = A7E5F0042F60000000000001 /* local-whisperTests */;
 		};
